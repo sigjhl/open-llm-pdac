@@ -1,0 +1,668 @@
+models:
+  # - "google/gemma-2-27b-it"  # Replace with your actual Gemma model name
+  - "unsloth/Llama-3-70b-Instruct-bnb-4bit"  # Replace with your actual Llama model name
+
+input_csv: 'cdsc_100cases_reduced_39-70-92.csv'
+
+instruct:
+  - name: 'MetastasisPrompt'
+    prompt: |
+      [Task]
+      You are to extract the status of METASTASIS from the pancreatic cancer [REPORT] and output as parseable JSON (no illegal characters) and do NOT put in code block:
+
+      Task flow: 
+        1) Find descriptions of possible metastasis to other organs outside the pancreas and peritoneal abnormalities including ascites. Do not include clearly benign (ex: cysts) or unrelated (ex: uterine myoma) findings to pancreatic cancer.
+          1-1) Organize the findings into "lymph_node_metastasis", "hematogenous_metastasis", and "peritoneal_seeding".
+        2) For each group in 1-1), for items in each group, loop the following:
+          2-1) Look for the impression concerning the abnormality such as "nonspecific", "indeterminate", "r/o metastasis", "suspicious for metastasis", "r/o peritoneal seeding", etc.  
+          2-2) Use the impression to judge the status ("status" key).
+            2-2-1) If the finding is not clearly benign nor unrelated, but does not have any impression or is ambiguous, use your best judgment in assigning the "status" key.
+          2-3) After the last item in the group, assign the final status for the group by using the most suspicious finding in the group.
+
+      ## DO NOT EXTRACT INFO ON PANCREATIC CANCER AND ADJACENT VESSELS.
+      ## THE REFERENCE SENTENCES CAN BE RECYCLED.
+          ex) "2. R/O Liver and lymph node metastasis."
+            {"lymph_node_metastasis": [{"0": {"ref":"R/O Liver and lymph node metastasis", "status": "LN1"}}], "final_lymph_node_status": "LN1", "hematogenous_metastasis": [{"0": {"ref": "R/O Liver and lymph node metastasis", "status": "H1"}}], "final_hematogenous_metastasis_status": "H1", "peritoneal_seeding": [], "final_peritoneal_seeding_status": "P1"}
+      ## Impressions with weak confidence such as "indeterminate", "possible metastasis", "R/O metastasis" should be interpreted as uncertain. 
+          ex) "r/o seeding" is P1, "possibly metastasis" is H1
+      ## Impressions with high confidence such as "suspicious for metastasis", "probable metastasis" should be interpreted as positive. 
+          ex) "probable metastasis" is H2, "probable carcinomatosis" is P2
+      ## "nonspecific" should be coded "H0" or "P0".
+      ## Use your best judgment for descriptors not explicitly listed in these instructions, aiming for the most clinically reasonable interpretation.
+      ## The sentence followed by one newline and a sequence of hyphens, or an arrow or a semicolon is RELATED WITH, or is the IMPRESSION concerning the text before the sequence of hyphens or the arrow or the semicolon
+          ex) "3. Small rim-enhancing lesions in the liver\n\n  --> R/O Mets" means that the lesions are to be seen as R/O Mets, so we will code it as H1.
+          "3. Peritoneal thickening.\n\n  ; R/O Seeding" means that the finding is to be seen as R/O Seeding, so we will code it as S1.
+          "Pancreas tail cancer.\n\n --with liver metastasis" In this case, the hyphens (--) are just linking the two related sentences. 
+
+      This task is crucial for determining the staging and treatment planning of a cancer patient. Be precise to ensure accurate output.
+
+      [Glossary]
+        Hematogenous metastasis: Hematogenous metastasis refers to the spread of cancer cells through the bloodstream to distant organs and tissues. This process allows cancer to spread from its primary site to other parts of the body, such as the liver, lungs, and bones. For example, in pancreatic cancer, hematogenous metastasis often leads to liver metastases, as the liver is a common target due to its rich blood supply.
+          Synonyms: Blood-borne metastasis, hematogenic spread
+        Peritoneal seeding: Peritoneal seeding, also known as peritoneal carcinomatosis or just "seeding" or "carcinomatosis," involves the spread of cancer cells within the abdominal cavity. These cells implant on the peritoneal surfaces and can cause peritoneal thickening and the formation of malignant ascites. Pancreatic cancer has a high tendency for peritoneal dissemination, so even mild peritoneal thickening may represent peritoneal carcinomatosis, indicating advanced disease.
+          Synonyms: Peritoneal dissemination, peritoneal metastasis, intraperitoneal spread, seeding, carcinomatosis
+        Ascites: Ascites in itself is not indicative of peritoneal seeding. The amount of ascites may be described in terms such as "scanty", "small", "moderate", "large", "massive". However, if ascites is described as "malignant" it means peritoneal seeding. Likewise, if ascites is described with an impression (like "indeterminate"), respect that impression. 
+        Metastasis: "Metastasis" generally refers to the spread of cancer cells to lymph nodes (lymphatic metastasis) and distant organs through the bloodstream (hematogenous metastasis). While "peritoneal metastasis" can also describe peritoneal seeding, this term is less commonly used. Instead, "peritoneal carcinomatosis" or simply "seeding" is preferred.
+        MPD: Main Pancreatic Duct
+        GDA: Gastroduodenal Artery
+        SMA: Superior Mesenteric Artery
+        SMV: Superior Mesenteric Vein
+        IVC: Inferior Vena Cava
+        CA: Celiac Axis (also called celiac trunk or celiac artery)
+        CHA: Common Hepatic Artery
+        PV: Portal Vein
+        MP: Main Portal Vein
+        Portomesenteric junction: where the superior mesenteric vein (SMV), splenic vein, and main portal vein meet. These are all veins. 
+        Gastrocolic trunk: a vein; branch of SMV.
+        Retroperitoneal (retroperitoneum) lymph nodes: Usually describes those around the aorta and IVC.
+        Mesenteric lymph nodes: Lymph nodes in the mesentery, may be described as along the SMV or SMA.
+        Left gastric lymph nodes: Lymph nodes along the left gastric artery, always distant lymph node group in pancreatic cancer.
+        Portocaval lymph nodes: Lymph nodes along the portal vein, specifically behind it.
+        Type of metastasis: hematogenous (lung, liver, other organs), lymph node (lymph nodes), peritoneum (peritoneal seeding)
+        Pericaval, paracaval: Location describing "around the IVC".
+
+      [Status Definitions for Lymph Node Metastasis]
+        LN0: Impression of benign (ex: "nonspecific", "benign", "reactive") or unspecified;
+          if impression does not exist, size descriptors (ex: "small", "tiny")
+        LN1: Impression of indeterminate (ex: "indeterminate", "R/O", "possible");
+          if impression does not exist, size descriptors (ex: "borderline", "prominent")
+        LN2: Impression of metastasis (ex: "metastasis", "metastatic LN");
+          if impression does not exist, size descriptors (ex: "enlarged")
+
+      [Status Definitions for Hematogenous Metastasis]
+        H0: Impression of benign or unspecified
+        H1: Impression of indeterminate (ex: "indeterminate", "R/O", "possible", "more likely than");
+          even if an impression favors one over the other, if it contains these indeterminate confidence descriptors it is H1
+        H2: Impression of metastasis (ex: "metastasis")
+
+      [Status Definitions for Peritoneal Seeding]
+        P0: Impression of benign or unspecified;
+          includes ascites of ANY AMOUNT without impression (ex: "Small amount of ascites.", "Moderate amount of ascites.", "Large amount of ascites.")
+        P1: Impression of indeterminate (ex: "indeterminate", "R/O seeding", "possible");
+          if impression does not exist, presence of peritoneal thickening
+        P2: Impression of peritoneal carcinomatosis (ex: "Peritoneal seeding", "malignant ascites")
+
+      [Format]
+      Output should be in JSON format with the following keys:
+      {
+        "lymph_node_metastasis": [
+          {
+            "<index>": {
+              "ref": "",
+              "status": ""
+            }
+          }
+        ],
+        "final_lymph_node_status": "",
+        "hematogenous_metastasis": [
+          {
+            "<index>": {
+              "ref": "",
+              "status": ""
+            }
+          }
+        ],
+        "final_hematogenous_metastasis_status": "",
+        "peritoneal_seeding": [
+          {
+            "<index>": {
+              "ref": "",
+              "status": ""
+            }
+          }
+        ],      "final_peritoneal_seeding_status": ""
+      }
+
+      Each index should contain a reference text and status. 
+      If there are multiple sites in a category, the "final_" keys should be set at the highest suspicion level in the category.
+      The same type of metastasis may be presented multiple times at different locations in the text. INCLUDE ALL OF THEM.
+      If there is an impression in the description, MAKE SURE TO INCLUDE THE IMPRESSION IN THE ref.
+      The same reference text can be used in multiple categories, if the sentence contains descriptions addressing multiple categories.
+      Reference texts may be summarized accurately for conciseness.
+      YOU MAY NOT CREATE NEW KEYS AT THE TOP LEVEL.
+
+      [Example Report 1]
+      1. A 2 cm pancreas head cancer, causing MPD dilatation.
+        -- Abutting the common hepatic artery, right hepatic artery, and main portal vein.
+        -- Encasement of jejunal branches of SMA.
+      2. Borderline-sized lymph nodes around the common hepatic artery, portocaval area, and retroperitoneum.
+      3. A small rim-enhancing nodule in liver S8; possible mets.
+      4. R/O Metastatic lung nodules in the RLL. 
+          
+      [Example Output 1]
+      {"lymph_node_metastasis":[{"0":{"ref":"Borderline-sized lymph nodes around the common hepatic artery, portocaval area, and retroperitoneum","status":"LN1"}}],"final_lymph_node_status":"LN1","hematogenous_metastasis":[{"0":{"ref":"R/O Metastatic lung nodules in the RLL.","status":"H1"}}, {"1":{"ref":"A small rim-enhancing nodule in liver S8; possible mets.","status":"H1"}}],"final_hematogenous_metastasis_status":"H1","peritoneal_seeding":[],"final_peritoneal_seeding_status":"P0"}
+
+      [Example Report 2]
+      1. A 3 cm sized hypovascular mass at the pancreas tail.
+          --> Probable pancreas cancer .
+          -- Encasing the splenic artery and occlusion of splenic vein.
+      2. Enlarged lymph nodes around the GDA, left gastric artery, and peripancreatic area.
+          --> R/O metastasis.
+      3. Nodular peritoneal thickening, probably peritoneal seeding.
+      4. Liver metastasis.
+      5. Small amount of ascites.
+          
+      [Example Output 2]
+      {"lymph_node_metastasis":[{"0":{"ref":"Enlarged lymph nodes around the GDA, left gastric artery, and peripancreatic area --> R/O metastasis.","status":"LN1"}}],"final_lymph_node_status":"LN1","hematogenous_metastasis":[{"0":{"ref":"Liver metastasis.","status":"H2"}}],"final_hematogenous_metastasis_status":"H2","peritoneal_seeding":[{"0":{"ref":"Nodular peritoneal thickening, probably peritoneal seeding.","status":"P2"}},{"1":{"ref":"Small amount of ascites.","status":"P0"}}],"final_peritoneal_seeding_status":"P2"}
+
+      [Example Report 3]
+      1. A 6 cm sized mass-like lesion replacing the pancreas body.
+          --> Biopsy-proven pancreas cancer .
+          -- Abutting the celiac artery and portomesenteric junction, and encasing the SMA.
+      2. No evidence of distant metastasis.
+      3. Small peripancreatic lymph nodes. 
+          -- r/o metastasis.
+
+      [Example Output 3]
+      {"lymph_node_metastasis":[{"0":{"ref":"small peripancreatic lymph nodes. -- r/o metastasis.","status":"LN1"}}],"final_lymph_node_status":"LN1","hematogenous_metastasis":[],"final_hematogenous_metastasis_status":"H0","peritoneal_seeding":[],"final_peritoneal_seeding_status":"P0"}
+
+      [Example Report 4]
+      1. A 3.4 cm-sized pancreas cancer at the neck portion. 
+            -- Abutting the 1st jejunal branch of SMV.
+            -- Solid contact with SMV > 180 degrees.
+            -- With small peripancreatic LNs.
+                --> r/o mets. 
+      2. Borderline-sized lymph node in the left para-aortic area.
+      3. Mild peritoneal nodularity; r/o seeding.
+
+      [Example Output 4]
+      {"lymph_node_metastasis":[{"0":{"ref":"small peripancreatic LNs --> r/o mets.","status":"LN1"}}],"final_lymph_node_status":"LN1","hematogenous_metastasis":[],"final_hematogenous_metastasis_status":"H0","peritoneal_seeding":[{"0":{"ref":"Mild peritoneal nodularity; r/o seeding.","status":"P1"}}],"final_peritoneal_seeding_status":"P1"}
+      
+      [Example Report 5]
+      1. A 1 cm pancreas cancer at the tail. 
+        -- Showing infiltrative margins with peripancreatic LN mets.
+      2. Borderline-sized lymph node in the pericaval area and periportal area.
+      3. A small indeterminate nodule in the right basal lung.
+
+      [Example Output 5]
+      {"lymph_node_metastasis":[{"0":{"ref":"with peripancreatic LN mets","status":"LN2"}}, {"1":{"ref":"Borderline-sized lymph node in the pericaval area and periportal area.","status":"LN1"}}],"final_lymph_node_status":"LN2","hematogenous_metastasis":[{"0":{"ref":"A small indeterminate nodule in the right basal lung.","status":"H1"}}],"final_hematogenous_metastasis_status":"H1","peritoneal_seeding":[],"final_peritoneal_seeding_status":"P0"}
+      
+      [REPORT]
+    schema: 'MetastasisAssessment'
+    collect_columns:
+      - 'hematogenous_metastasis'
+      - 'final_hematogenous_metastasis_status'
+      - 'peritoneal_seeding'
+      - 'final_peritoneal_seeding_status'
+
+  - name: 'LymphNodePrompt'
+    prompt: |
+      [Task]
+      You are to extract the status of LYMPH NODES from the pancreas cancer [REPORT] and output as parseable JSON (no illegal characters) and do NOT put in code block:
+
+      Task flow: 
+        1) Get the tumor's location
+        2) Find descriptions concerning the regional lymph nodes, taking into the definition of regional lymph nodes by tumor location ("ref" key)
+        3) Look for impressions concerning the described regional lymph nodes such as "nonspecific", "r/o metastasis", "suspicious for metatasis", "metastatic LN", etc.
+          3-1) If no impressions are found, use the size descriptors such as "small", "borderline", "enlarged" as a proxy
+          ** Disregard any other descriptors like those of shape and margin ("infiltrative", etc)
+        4) Use the impressions (or size descriptors if no impressions are given) to judge the status ("status" key)
+        5) Repeat step 2-4 with distant lymph nodes.
+
+      ## ONLY INCLUDE INFORMATION ON THE SPECIFIED LYMPH NODES FOR EACH EXTRACTION.
+      ## DO NOT EXTRACT INFO ON OTHER VESSELS, ORGANS, OR STRUCTURES. 
+      ## DO NOT EXTRACT INFO ON hematogenous METASTASIS (ex: liver metastasis, lung metastasis).
+      ## DO NOT EXTRACT INFO ON PERITONEAL SEEDING, CARCINOMATOSIS.
+      ## THE REFERENCE SENTENCES CAN BE RECYCLED.
+          ex) "2. Borderline lymph nodes in the peripancreatic area, along the CHA and aorta"
+            {"regional_lymph_node":{"ref":"Borderline lymph nodes in the peripancreatic area, along the CHA","status":"LN1"},"distant_lymph_node":{"ref":"Borderline lymph nodes in ...along...aorta","status":"LN1"}}
+      ## IMPORTANT! PAY ATTENTION WHEN HANDLING LONG SENTENCES WITH MULTIPLE SITES!!!
+          ex) "Small to borderline LNs around the CHA, hepatoduodenal ligament, left gastric area, SMV, periportal, and retroperitoneal area"
+            {"regional_lymph_node":{"ref":"Small to borderline LNs ... CHA, hepatoduodenal ligament,... SMV, periportal","status":"LN1"},"distant_lymph_node":{"ref":"Small to borderline LNs ... left gastric area,... retroperitoneal area","status":"LN1"}}
+      ## Impressions with weak confidence such as "indeterminate", "possible metastasis", "R/O metastasis" should be interpreted as uncertain. 
+          ex) "r/o metastasis" is LN1, "r/o reactive" is LN1, "possibly metastasis" is LN1.
+      ## Impressions with high confidence such as "suspicious for metastasis", "probable metastasis" should be interpreted as positive. 
+          ex) "probable metastasis" is LN2, "probable benign" is LN0
+      ## "nonspecific" and otherwise unspecified lymph nodes should be coded "LN0".
+      ## Size descriptors like "small" is LN0, "borderline" is LN1, and "enlarged" is LN2.
+      ## Interpret "Small to borderline" as "borderline", "Borderline to enlarged" as "enlarged", "Small to enlarged" as "enlarged".
+      ## Use your best judgment for descriptors not explicitly listed in these instructions, aiming for the most clinically reasonable interpretation.
+      ## The sentence followed by one newline and a sequence of hyphens or an arrow or a semicolon is RELATED WITH, or is the IMPRESSION concerning the text before the sequence of hyphens or the arrow or the semicolon
+          ex) "3. Borderline LNs in the peripancreatic area.\n\n  --> R/O Mets" means that the borderline LNs are to be seen as R/O Mets, so we will code it as LN1.
+          "3. Enlarged LNs in the aortocaval area.\n\n  ; R/O Mets" means that the LNs are to be seen as R/O Mets, so we will code it as LN1.
+          "Pancreas tail cancer.\n\n --with peripancreatic lymph node metastasis" In this case, the hyphens (--) are just linking the two related sentences. 
+
+      This task is crucial for determining the staging and treatment planning of a cancer patient. Be precise to ensure accurate output.
+
+      [Glossary]
+          MPD: Main Pancreatic Duct
+          GDA: Gastroduodenal Artery
+          SMA: Superior Mesenteric Artery
+          SMV: Superior Mesenteric Vein
+          IVC: Inferior Vena Cava
+          CA: Celiac Axis (also called celiac trunk or celiac artery)
+          CHA: Common Hepatic Artery
+          PV: Portal Vein
+          MP: Main Portal Vein
+          Portomesenteric junction: where the superior mesenteric vein (SMV), splenic vein, and main portal vein meet. These are all veins. 
+          Gastrocolic trunk: a vein; branch of SMV.
+          Retroperitoneal (retroperitoneum) lymph nodes: Usually describes those around the aorta and IVC.
+          Mesenteric lymph nodes: Lymph nodes in the mesentery, may be described as along the SMV or SMA.
+          Left gastric lymph nodes: Lymph nodes along the left gastric artery, always distant lymph node group in pancreas cancer.
+          Portocaval lymph nodes: Lymph nodes along the portal vein, specifically behind it
+          Type of metastasis: hematogenous (lung, liver, other organs), lymph node (lymph nodes), peritoneum (peritoneal seeding)
+          Pericaval, paracaval: Location describing "around the IVC".
+
+      [Regional and Distant Lymph Node Groups for Pancreatic Tumors]
+      The pancreas is divided into head, neck, body, and tail. The uncinate process is part of the head.
+
+      For tumors in Head or Neck of Pancreas:
+        Regional:
+          - Lymph nodes along the common bile duct
+          - Lymph nodes along the common hepatic artery
+          - Lymph nodes along the portal vein (including portocaval)
+          - Lymph nodes in pyloric, posterior, and anterior pancreatoduodenal arcades
+          - Lymph nodes in the mesentery
+        Distant:
+          - Lymph nodes not described above, for example, retroperitoneal, retroperitoneum, around the aorta or IVC, left gastric area
+
+      For tumors in Body or Tail of Pancreas:
+        Regional:
+          - Lymph nodes along the common hepatic artery
+          - Lymph nodes along the celiac axis
+          - Lymph nodes along the splenic artery
+          - Lymph nodes at the splenic hilum
+        Distant:
+          - Lymph nodes not described above, for example, retroperitoneal, retroperitoneum, around the aorta or IVC, left gastric area
+
+      [Status Definitions for Lymph Nodes]
+        LN0: Impression of benign (ex: "nonspecific", "benign", "reactive") or unspecified;
+          if impression does not exist, size descriptors (ex: "small", "tiny")
+        LN1: Impression of indeterminate (ex: "indeterminate", "R/O", "possible");
+          if impression does not exist, size descriptors (ex: "borderline", "prominent")
+        LN2: Impression of metastasis (ex: "metastasis", "metastatic LN");
+          if impression does not exist, size descriptors (ex: "enlarged")
+
+      [Format]
+      Output should be in JSON format with the following keys:
+      {
+        "hematogenous_metastasis": "",
+        "peritoneal_seeding": "",
+        "tumor_site": "",
+        "regional_lymph_node": {
+          "ref": "",
+          "status": ""
+        },
+        "distant_lymph_node": {
+          "ref": "",
+          "status": ""
+        }
+      }
+
+      Fill out keys "hematogenous_metastasis" and "peritoneal_seeding" with what you see fit. 
+      Keys "regional_lymph_node" and "distant_lymph_node" value should contain a reference text and status, in their respective keys. 
+      If there are multiple sites in a category (regional, distant), the "ref" should contain all relevant text and the status should be set at the highest suspicion level.
+      The same nodal group may be presented multiple times at different locations in the text. INCLUDE ALL OF THEM (See Example Report 5).
+      If there is an impression in the description, MAKE SURE TO INCLUDE THE IMPRESSION IN THE ref.
+      Reference texts can be used in both "regional_lymph_node" and "distant_lymph_node", if the sentence contains descriptions of both groups.
+      Reference texts may be summarized accurately for conciseness.
+      ## REMEMBER TO PAY ATTENTION TO IMPRESSIONS OF THE LYMPH NODES, AND ONLY FALLBACK TO SIZE DESCRIPTORS WHEN THEY ARE NOT AVAILABLE.
+        ex) "Enlarged LNs" does not have an impression only a size descriptor ("Enlarged"), hence LN2.
+        ex) "Enlarged LNS; possibly metastasis" has an impression ("possibly"), hence LN1.
+      YOU MAY NOT CREATE NEW KEYS AT THE TOP LEVEL.
+
+      [Example Report 1]
+      1. A 2 cm pancreas head cancer, causing MPD dilatation.
+        -- Abutting the common hepatic artery, right hepatic artery, and main portal vein.
+        -- Encasement of jejunal branches of SMA.
+      2. Borderline-sized lymph nodes around the common hepatic artery, portocaval area, and retroperitoneum.
+      3. Right hepatic artery arising from SMA and the left hepatic artery from CHA.
+      4. R/O Metastatic lung nodules in the RLL. 
+          
+      [Example Output 1]
+      {"hematogenous_metastasis":"R/O Metastatic lung nodules in the RLL","peritoneal_seeding":"","tumor_site":"Head","regional_lymph_node":{"ref":"Borderline-sized lymph nodes around the common hepatic artery, portocaval area.","status":"LN1"},"distant_lymph_node":{"ref":"Borderline-sized lymph nodes around the retroperitoneum.","status":"LN1"}}
+
+      [Example Report 2]
+      1. A 3 cm sized hypovascular mass at the pancreas tail.
+          --> Probable pancreas cancer .
+          -- Encasing the splenic artery and occlusion of splenic vein.
+      2. Enlarged lymph nodes around the GDA, left gastric artery, and peripancreatic area.
+          --> R/O metastasis.
+      3. Right hepatic artery originating from SMA. 
+      4. R/O Liver metastasis.
+          
+      [Example Output 2]
+      {"hematogenous_metastasis":"R/O Liver metastasis.","peritoneal_seeding":"","tumor_site":"Tail","regional_lymph_node":{"ref":"Enlarged lymph nodes around the GDA and peripancreatic area --> R/O metastasis","status":"LN1"},"distant_lymph_node":{"ref":"Enlarged lymph nodes around the left gastric artery --> R/O metastasis","status":"LN1"}}
+
+      [Example Report 3]
+      1. A 6 cm sized mass-like lesion replacing the pancreas body.
+          --> Biopsy-proven pancreas cancer .
+          -- Abutting the celiac artery and portomesenteric junction, and encasing the SMA.
+      2. No evidence of distant metastasis.
+      3. Small peripancreatic lymph nodes. 
+          -- r/o metastasis.
+
+      [Example Output 3]
+      {"hematogenous_metastasis":"","peritoneal_seeding":"","tumor_site":"Body","regional_lymph_node":{"ref":"small peripancreatic lymph nodes. -- r/o metastasis","status":"LN1"},"distant_lymph_node":{"ref":"No evidence of distant metastasis.","status":"LN0"}}
+
+      [Example Report 4]
+      1. A 3.4 cm-sized pancreas cancer at the neck portion. 
+            -- Abutting the 1st jejunal branch of SMV.
+            -- Solid contact with SMV > 180 degrees.
+            -- With small peripancreatic LNs.
+                --> r/o mets. 
+      2. Borderline-sized lymph node in the left para-aortic area.
+      3. Mild peritoneal nodularity; r/o seeding.
+
+      [Example Output 4]
+      {"hematogenous_metastasis":"","peritoneal_seeding":"Mild peritoneal nodularity; r/o seeding.","tumor_site":"Neck","regional_lymph_node":{"ref":"small peripancreatic LNs --> r/o mets","status":"LN1"},"distant_lymph_node":{"ref":"Borderline-sized lymph node in the left para-aortic area.","status":"LN1"}}
+      
+      [Example Report 5]
+      1. A 1 cm pancreas cancer at the tail. 
+        -- Showing infiltrative margins with peripancreatic LN mets.
+      2. Borderline-sized lymph node in the pericaval area and periportal area.
+
+      [Example Output 5]
+      {"hematogenous_metastasis":"","peritoneal_seeding":"","tumor_site":"Tail","regional_lymph_node":{"ref":"with peripancreatic LN mets, Borderline-sized lymph node in the...and periportal area.","status":"LN2"},"distant_lymph_node":{"ref":"Borderline-sized lymph node in the pericaval area","status":"LN1"}}
+      
+      [REPORT]
+    schema: 'LNAssessment'
+    collect_columns:
+      - 'regional_lymph_node.ref'
+      - 'regional_lymph_node.status'
+      - 'distant_lymph_node.ref'
+      - 'distant_lymph_node.status'
+
+  - name: 'TumorPrompt'
+    prompt: |
+      [Task]
+      You are to extract the imaging features of pancreatic cancer and duct involvement from the [REPORT] and output as parseable JSON (no illegal characters) and do NOT put in code block:
+
+      Task flow: 
+        1) Find descriptions of the pancreatic cancer itself (NOT metastatic lesions or tumors in other organs).
+          1-1) Organize the findings into "tumor_location", "tumor_size", and "tumor_morphology".
+          1-2) The tumor_size unit is cm. TAKE CARE TO CONVERT MM to CM.
+        2) Find descriptions of the pancreatic duct and bile duct. 
+          2-1) Organize the findings into "main_pancreatic_duct" and "bile_duct"
+        3) Find descriptions of the pancreatic cancer invading other organs. 
+          3-1) Organize the findings into "adjacent_organ_invasion".
+
+      ## Use your best judgment for descriptors not explicitly listed in these instructions, aiming for the most clinically reasonable interpretation.
+      ## The sentence followed by one newline and a sequence of hyphens or an arrow or a semicolon is RELATED WITH, or is the IMPRESSION concerning the text before the sequence of hyphens or the arrow or the semicolon
+        ex) "3. A 2 cm solid mass in the pancreas body.\n\n --> R/O Invasion of stomach" means that the tumor might be invading the stomach, so we will include this information in the "adjacent_organ_invasion" field.
+        "1. Pancreas tail mass, 1.5 cm.\n\n ; Obstruction of pancreatic duct" means that the lesion is obstructing the pancreatic duct, so we will code the pancreatic_duct status as D1.
+        "Pancreas head cancer, 4 cm.\n\n --with common bile duct dilatation" In this case, the hyphens (--) are linking related information, indicating that the cancer is causing bile duct dilatation.
+      ## If information for a key is absent, use an empty string "" as the value.
+      ## Use your best judgment for conflicting information in the report.
+
+      This task is crucial for determining the staging and treatment planning of a cancer patient. Be precise to ensure accurate output.
+
+      [Glossary]
+        Metastasis: "Metastasis" generally refers to the spread of cancer cells to lymph nodes (lymphatic metastasis) and distant organs through the bloodstream (hematogenous metastasis). While "peritoneal metastasis" can also describe peritoneal seeding, this term is less commonly used. Instead, "peritoneal carcinomatosis" or simply "seeding" is preferred.
+        Main Pancreatic Duct: Also called just "pancreatic duct". The pancreatic duct is a slender tube running through the pancreas, connecting with the duodenum. It merges with the common bile duct at the ampulla of Vater before opening into the duodenum.
+        IPMN: "Intraductal Papillary Mucinous Neoplasm (IPMN)" is a cystic growth within the pancreatic ducts, characterized by the dilation of these ducts due to the production of mucin. There are three subtypes based on their location: main-duct IPMN, which occurs in the main pancreatic duct; branch-duct IPMN, found in the smaller side branches of the pancreatic duct; and mixed-type IPMN, involving both the main and branch ducts. These neoplasms often cause visible enlargement of the affected ducts on imaging.
+        Bile Duct: The bile duct system includes the hepatic ducts, cystic duct, and common bile duct. The common bile duct runs from the liver and gallbladder, merging with the pancreatic duct before entering the duodenum at the ampulla of Vater. 
+        Double Duct Sign: The "double duct sign" refers to the simultaneous dilation of both the common bile duct and the pancreatic duct, typically seen on imaging studies. This sign often suggests the presence of an obstructive process at the head of the pancreas, such as a tumor or inflammation, causing blockage at the level where these ducts converge.
+        Tumor Morphology: Describes the appearance and characteristics of the tumor on imaging. Common descriptors include hypodense, hypervascular, cystic, solid, infiltrative, well-defined, ill-defined, heterogeneous, and homogeneous.
+        MPD: Main Pancreatic Duct
+        CBD: Common Bile Duct
+        Biliary tree: Synonym for bile ducts as a whole.
+        GDA: Gastroduodenal Artery
+        SMA: Superior Mesenteric Artery
+        SMV: Superior Mesenteric Vein
+        IVC: Inferior Vena Cava
+        CA: Celiac Axis (also called celiac trunk or celiac artery)
+        CHA: Common Hepatic Artery
+        PV: Portal Vein
+        MP: Main Portal Vein
+        Portomesenteric junction: where the superior mesenteric vein (SMV), splenic vein, and main portal vein meet. These are all veins. 
+        Gastrocolic trunk: a vein; branch of SMV.
+        Type of metastasis: hematogenous (lung, liver, other organs), lymph node (lymph nodes), peritoneum (peritoneal seeding)
+        Adjacent organ invasion: Organs that may be invaded by pancreatic cancer are the **duodenum, stomach, spleen, liver, colon, left kidney, right kidney, left adrenal gland, right adrenal gland, spine, diaphragm, mesocolon**.
+
+      [Status Definitions for Duct Involvement]
+        D0: No mention of duct or explicit mention of no involvement
+        D1: Involvement of duct (ex: "narrowing", "cut-off", "obstruction", "invasion", "causing dilatation of", "obstructive pancreatitis" for pancreatic duct, "obstructive cholangiohepatitis" for bile duct)
+
+      [Format]
+      Output should be in JSON format with the following keys:
+      {
+        "metastasis": "",
+        "lymph_nodes": "",
+        "vessel_involvement": "", 
+        "tumor_location": "",
+        "tumor_size": "",
+        "tumor_morphology": "",
+        "main_pancreatic_duct": {
+          "ref": "",
+          "status": ""
+        },
+        "bile_duct": {
+          "ref": "",
+          "status": ""
+        },
+        "adjacent_organ_invasion": ""
+      }
+
+      For the main_pancreatic_duct and bile_duct, the reference text must be retrieved, and then a status must be assigned per the instructions above. 
+      For the rest of the keys, create a concise summary string as the values. 
+      The unit for size is centimeters. Output only the numerical value in cm. 
+      If there are multiple dimensions for size, select the largest one. ONLY A SINGLE NUMBER IS ALLOWED.
+      Do NOT include IPMNs, side branches, or branch ducts in main_pancreatic_duct.
+      adjacent_organ_invasion refers to organs that are DIRECTLY invaded by or abutting to the pancreas cancer, that are NOT DUCTS and NOT VESSELS; examples include the **duodenum, stomach, spleen, liver, colon, left kidney, right kidney, left adrenal gland, right adrenal gland, spine, diaphragm, mesocolon**. Do NOT include vascular invasion in adjacent_organ_invasion. Put vascular invasion in vessel_involvement. Do NOT include "peripancreatic infiltration".
+      **adjacent_organ_invasion is uncommon** and it will be absent more likely than present. Do NOT try to fit other findings into it. When there are multiple organs invaded, list all of them. 
+      To be included in adjacent_organ_invasion, the **organ in question MUST BE IN CONTACT WITH THE PANCREAS CANCER**.
+        ex) "1. Pancreas cancer abutting the stomach.\n2. Nodular thickening of the adrenal gland; indeterminate", adjacent_organ_invasion: "abutting the stomach"
+      The same reference text can be used for main_pancreatic_duct and bile_duct, otherwise THERE SHOULD BE NO OVERLAP IN THE STRING VALUES IN THE REST OF THE KEYS. 
+      **VESSELS (ARTERIES, VEINS) CANNOT BE PUT IN adjacent_organ_invasion.**
+      **MAKE SURE THE UNIT FOR SIZE IS CM.**
+      YOU MAY NOT CREATE NEW KEYS AT THE TOP LEVEL.
+
+      [Example Report 1]
+      1. A 2 cm pancreas head cancer with double duct sign.
+        -- Abutting the common hepatic artery, right hepatic artery, and main portal vein.
+        -- Encasement of jejunal branches of SMA.
+        -- Invasion of the duodenum with luminal narrowing.
+      2. Borderline-sized lymph nodes around the common hepatic artery, portocaval area, and retroperitoneum.
+      3. A small rim-enhancing nodule in liver S8; possible mets.
+      4. R/O Metastatic lung nodules in the RLL. 
+          
+      [Example Output 1]
+      {"metastasis":"A small rim-enhancing nodule in liver S8; possible mets. R/O Metastatic lung nodules in the RLL. ","lymph_nodes":"Borderline-sized lymph nodes around the common hepatic artery, portocaval area, and retroperitoneum.","vessels":"Abutting the common hepatic artery, right hepatic artery, and main portal vein. Encasement of jejunal branches of SMA.","tumor_location":"Pancreas head","tumor_size":"2","tumor_morphology":"","main_pancreatic_duct":{"ref":"with double duct sign","status":"D1"},"bile_duct":{"ref":"with double duct sign","status":"D1"},"adjacent_organ_invasion":"Invasion of the duodenum with luminal narrowing"}
+
+      [Example Report 2]
+      1. A 3 cm sized hypovascular mass at the pancreas tail with peripancreatic infiltration.
+          --> Probable pancreas cancer.
+          -- Encasing the splenic artery and occlusion of splenic vein.
+      2. Enlarged lymph nodes around the GDA, left gastric artery, and peripancreatic area.
+          --> R/O metastasis.
+      3. Nodular peritoneal thickening, probably peritoneal seeding.
+      4. Liver metastasis.
+      5. Small amount of ascites.
+      6. Nodular thickening of the adrenal gland; indeterminate.
+          
+      [Example Output 2]
+      {"metastasis":"Nodular peritoneal thickening, probably peritoneal seeding. Liver metastasis.","lymph_nodes":"Enlarged lymph nodes around the GDA, left gastric artery, and peripancreatic area.  --> R/O metastasis.","vessels":"Encasing the splenic artery and occlusion of splenic vein.","tumor_location":"Pancreas tail","tumor_size":"3","tumor_morphology":"Hypovascular mass","main_pancreatic_duct":{"ref":"","status":"D0"},"bile_duct":{"ref":"","status":"D0"},"adjacent_organ_invasion":""}
+
+      [Example Report 3]
+      1. A 6 cm sized mass-like lesion replacing the pancreas body.
+          --> Biopsy-proven pancreas cancer.
+          -- Abutting the celiac artery and portomesenteric junction, and encasing the SMA.
+      2. No evidence of distant metastasis.
+      3. Small peripancreatic lymph nodes. 
+          -- r/o metastasis.
+      4. Invasion of the stomach wall with ulceration.
+      5. Obstruction of the common bile duct with upstream dilatation.
+
+      [Example Output 3]
+      {"metastasis":"No evidence of distant metastasis.","lymph_nodes":"Small peripancreatic lymph nodes.  -- r/o metastasis.","vessels":"Abutting the celiac artery and portomesenteric junction, and encasing the SMA.","tumor_location":"Pancreas body","tumor_size":"6","tumor_morphology":"Mass-like lesion replacing pancreas body","main_pancreatic_duct":{"ref":"","status":"D0"},"bile_duct":{"ref":"Obstruction of the common bile duct with upstream dilatation","status":"D1"},"adjacent_organ_invasion":"Invasion of the stomach wall with ulceration"}
+
+      [Example Report 4]
+      1. A 3.4 cm-sized pancreas cancer at the neck portion with cut-off of the pancreatic duct.
+            -- Abutting the 1st jejunal branch of SMV.
+            -- Solid contact with SMV > 180 degrees.
+            -- With small peripancreatic LNs.
+                --> r/o mets. 
+      2. Borderline-sized lymph node in the left para-aortic area.
+      3. Mild peritoneal nodularity; r/o seeding.
+
+      [Example Output 4]
+      {"metastasis":"Mild peritoneal nodularity; r/o seeding.","lymph_nodes":"With small peripancreatic LNs.  --> r/o mets. Borderline-sized lymph node in the left para-aortic area.","vessels":"Abutting the 1st jejunal branch of SMV. Solid contact with SMV > 180 degrees.","tumor_location":"Pancreas neck","tumor_size":"3.4","tumor_morphology":"","main_pancreatic_duct":{"ref":"cut-off of the pancreatic duct","status":"D1"},"bile_duct":{"ref":"","status":"D0"},"adjacent_organ_invasion":""}
+
+      [Example Report 5]
+      1. A 1 cm pancreas cancer at the tail. 
+        -- Showing infiltrative margins with peripancreatic LN mets.
+        -- Mild dilatation of upstream duct. 
+      2. Borderline-sized lymph node in the pericaval area and periportal area.
+      3. A small indeterminate nodule in the right basal lung.
+      4. No evidence of adjacent organ invasion.
+
+      [Example Output 5]
+      {"metastasis":"A small indeterminate nodule in the right basal lung.","lymph_nodes":"with peripancreatic LN mets. Borderline-sized lymph node in the pericaval area and periportal area.","vessels":"","tumor_location":"Pancreas tail","tumor_size":"1","tumor_morphology":"Infiltrative margins","main_pancreatic_duct":{"ref":"Mild dilatation of upstream duct.","status":"D1"},"bile_duct":{"ref":"","status":"D0"},"adjacent_organ_invasion":""}
+
+      [REPORT]
+    schema: 'TumorAssessment'
+    collect_columns:
+      - 'tumor_location'
+      - 'tumor_size'
+      - 'tumor_morphology'
+      - 'main_pancreatic_duct.ref'
+      - 'main_pancreatic_duct.status'
+      - 'bile_duct.ref'
+      - 'bile_duct.status'
+      - 'adjacent_organ_invasion'
+
+  - name: 'VesselPrompt'
+    prompt: |
+      instructions, report --> ref, status
+      
+      [Task]
+      You are to extract the resectability status of the following vessels from the [REPORT] and output as parseable JSON (no illegal characters) and do NOT put in code block:
+      - Celiac axis (CA; also called celiac trunk or celiac artery)
+      - Common hepatic artery (CHA)
+      - Superior mesenteric artery (SMA)
+      - Main portal vein (MPV) and portomesenteric junction
+      - Superior mesenteric vein (SMV)
+      - Inferior vena cava (IVC)
+      
+      Additionally, extract any mention of arterial variations.
+
+      ## ONLY INCLUDE INFORMATION ON THE SPECIFIED VESSEL FOR EACH EXTRACTION.
+      ## DO NOT EXTRACT INFO ON OTHER VESSELS, LYMPH NODES, OR ORGANS. 
+      ## DO NOT assign findings concerning BRANCHES TO THESE NAMED VESSELS.
+        ex) "abutting jejunal branch of SMA" should go ONLY in "branches_and_other", NOT IN "superior_mesenteric_artery"
+      ## Confidence descriptors such as "R/O, r/o, possible, probable, suspicious for" (INCLUDING ANY COMBINATION OF THESE) should be regarded as positive.
+        ex) "r/o focal invasion" is INVASION (A2, V1, or I2).
+
+      This is a critical mission to ensure the safe treatment of a cancer patient. FOCUS to create the most accurate output.
+      WARNING! Definitions of resectability are different for arteries, veins, arterial variations, and IVC. Take care to USE THE APPROPRIATE SET OF DEFINITIONS.
+      [Glossary]
+      MPD: Main Pancreatic Duct
+      GDA: Gastroduodenal Artery
+      SMA: Superior Mesenteric Artery
+      SMV: Superior Mesenteric Vein
+      IVC: Inferior Vena Cava
+      CA: Celiac Axis (also called celiac trunk or celiac artery)
+      CHA: Common Hepatic Artery
+      PV: Portal Vein
+      MP: Main Portal Vein
+      Portomesenteric junction: where the superior mesenteric vein (SMV), splenic vein, and main portal vein meet. These are all veins. 
+      Gastrocolic trunk: a vein; branch of SMV.
+
+      [Status Definitions for Arteries and Aorta]
+        A0: No arterial tumor contact
+        A1: Solid tumor contact ≤180°, descriptors such as "abutment"
+        A2: Tumor contact >180°, descriptors such as "encasement", "occlusion", "obliteration", "invasion"
+        A9: No description of the artery
+
+      [Status Definitions for Veins]
+        V0: No tumor contact with the vein or ≤180° contact without vein contour irregularity; descriptors such as "abutment"
+        V1: (Solid tumor contact with the vein of >180°) OR (contact of ≤180° with contour irregularity of the vein) OR (invasion without occlusion or thrombosis); descriptors such as "encasement"
+        V2: Occlusion or thrombosis due to tumor
+        V9: No description of the vein
+
+      [Status Definitions for IVC]
+        I0: No tumor contact with the inferior vena cava (IVC)
+        I1: Solid tumor contact with or invasion, encasement of IVC; descriptors such as "abutment"
+        I2: Occlusion or thrombosis due to tumor
+        I9: No description of the vein
+
+      [Status Definitions for Arterial Variations]
+        VAR1: A clear mention of an arterial variation
+        VAR9: No mention of arterial variations
+
+      [Format]
+      Output should be in JSON format with the following keys:
+      {
+        "branches_and_other": {},
+        "artery": {
+          "celiac_axis": {},
+          "common_hepatic_artery": {},
+          "superior_mesenteric_artery": {}
+        },
+        "aorta": {},
+        "arterial_variations": {},
+        "vein": {
+          "main_portal_vein": {},
+          "superior_mesenteric_vein": {}
+        },
+        "inferior_vena_cava": {}
+      }
+
+
+      Each key's value should contain an object with the reference text and status.
+      For 'branches_and_other', include all branches of the named arteries (CA, CHA, etc.) and other vessels that are described but do not fall in other keys.
+      YOU MAY NOT CREATE NEW KEYS AT THE TOP LEVEL.
+      FOCUS to NOT mix up similar named vessels (CA and CHA, SMV and SMA)
+
+      [Example Report 1]
+      1. A 2 cm pancreas head cancer, causing MPD dilatation.
+          -- Abutting the common hepatic artery, right hepatic artery.
+          -- R/O Invasion of the main portal vein. 
+          -- Encasement of jejunal branches of SMA.
+      2. Borderline-sized lymph nodes around the common hepatic artery.
+      3. Right hepatic artery arising from SMA and the left hepatic artery from CHA.
+
+      [Example Output 1]
+      {"branches_and_other":{"right hepatic artery":{"ref":"abutting the ... right hepatic artery","status":"A1"},"jejunal branches of SMA":{"ref":"Encasement of jejunal branches of SMA","status":"A2"}},"artery":{"celiac_axis":{"ref":"not described","status":"A9"},"common_hepatic_artery":{"ref":"abutting the common hepatic artery","status":"A1"},"superior_mesenteric_artery":{"ref":"not described","status":"A9"}},"aorta":{"ref":"not described","status":"A9"},"arterial_variations":{"ref":"Right hepatic artery arising from SMA and the left hepatic artery from CHA","status":"VAR1"},"vein":{"main_portal_vein":{"ref":"R/O Invasion of the main portal vein.","status":"V1"},"superior_mesenteric_vein":{"ref":"not described","status":"V9"}},"inferior_vena_cava":{"ref":"not described","status":"I9"}}
+
+      [Example Report 2]
+      1. A 3 cm sized hypovascular mass at the pancreas tail.
+          --> Probable pancreas cancer .
+          -- Encasing the splenic artery and occlusion of splenic vein.
+          -- R/O Tumor thrmobus in the SMV.
+      2. Enlarged lymph nodes around the GDA.
+      3. Right hepatic artery originating from SMA. 
+
+      [Example Output 2]
+      {"branches_and_other":{"splenic artery":{"ref":"encasing the splenic artery","status":"A2"},"splenic vein":{"ref":"occlusion of splenic vein","status":"V2"}},"artery":{"celiac_axis":{"ref":"not described","status":"A9"},"common_hepatic_artery":{"ref":"not described","status":"A9"},"superior_mesenteric_artery":{"ref":"not described","status":"A9"}},"aorta":{"ref":"not described","status":"A9"},"arterial_variations":{"ref":"Right hepatic artery originating from SMA","status":"VAR1"},"vein":{"main_portal_vein":{"ref":"not described","status":"V9"},"superior_mesenteric_vein":{"ref":"R/O Tumor thrmobus in the SMV.","status":"V2"}},"inferior_vena_cava":{"ref":"not described","status":"I9"}}
+
+      [Example Report 3]
+      1. A 6 cm sized mass-like lesion replacing the pancreas body.
+          --> Biopsy-proven pancreas cancer .
+          -- Abutting the celiac artery and portomesenteric junction, and encasing the SMA.
+      2. No evidence of distant metastasis.
+
+      [Example Output 3]
+      {"branches_and_other":{""},"artery":{"celiac_axis":{"ref":"abutting the celiac artery","status":"A1"},"common_hepatic_artery":{"ref":"not described","status":"A9"},"superior_mesenteric_artery":{"ref":"encasing the SMA","status":"A2"}},"aorta":{"ref":"not described","status":"A9"},"arterial_variations":{"ref":"not described","status":"VAR9"},"vein":{"main_portal_vein":{"ref":"abutting the portomesenteric junction","status":"V0"},"superior_mesenteric_vein":{"ref":"not described","status":"V9"}},"inferior_vena_cava":{"ref":"not described","status":"I9"}}
+
+      [Example Report 4]
+      1. A 3.4 cm-sized pancreas cancer at the neck portion. 
+            -- Abutting the 1st jejunal branch of SMV.
+            -- Solid contact with SMV > 180 degrees; R/O invasion.
+            -- R/O invasion of SMA. 
+      2. No evidence of metastasis. 
+      
+      [Example Output 4]
+      {"branches_and_other":{"1st jejunal branch of SMV":{"ref":"abutting the 1st jejunal branch of SMV","status":"V0"}},"artery":{"celiac_axis":{"ref":"not described","status":"A9"},"common_hepatic_artery":{"ref":"not described","status":"A9"},"superior_mesenteric_artery":{"ref":"R/O invasion of SMA",status:"A2"}},"aorta":{"ref":"not described","status":"A9"},"arterial_variations":{"ref":"not described","status":"VAR9"},"vein":{"main_portal_vein":{"ref":"not described","status":"V9"},"superior_mesenteric_vein":{"ref":"Solid contact with SMV > 180 degrees; R/O invasion.","status":"V1"}},"inferior_vena_cava":{"ref":"not described","status":"I9"}}
+
+      [REPORT]
+    schema: 'VascularAssessment'
+    collect_columns:
+      - 'branches_and_other'  # If you need specific nested fields, use dot notation, e.g., 'branches_and_other.branch1.status'
+      - 'artery.celiac_axis.ref'
+      - 'artery.celiac_axis.status'
+      - 'artery.common_hepatic_artery.ref'
+      - 'artery.common_hepatic_artery.status'
+      - 'artery.superior_mesenteric_artery.ref'
+      - 'artery.superior_mesenteric_artery.status'
+      - 'aorta.ref'
+      - 'aorta.status'
+      - 'arterial_variations.ref'
+      - 'arterial_variations.status'
+      - 'vein.main_portal_vein.ref'
+      - 'vein.main_portal_vein.status'
+      - 'vein.superior_mesenteric_vein.ref'
+      - 'vein.superior_mesenteric_vein.status'
+      - 'inferior_vena_cava.ref'
+      - 'inferior_vena_cava.status'
